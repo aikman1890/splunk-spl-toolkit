@@ -1,0 +1,135 @@
+<dashboard version="1.1" theme="dark">
+  <label>SRE Overview</label>
+  <description>
+    Service error rates, mean time to restore, capacity forecast, and failed-login
+    activity for on-call SRE review. Pairs with searches/ and alerts/ in this repo.
+  </description>
+
+  <!-- Time range shared by all panels -->
+  <fieldset submitButton="false" autoRun="true">
+    <input type="time" token="timerange" searchWhenChanged="true">
+      <label>Time range</label>
+      <default>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+    <input type="dropdown" token="service" searchWhenChanged="true">
+      <label>Service</label>
+      <choice value="*">All services</choice>
+      <search>
+        <query>index=web sourcetype=access_combined
+| eval service=coalesce(service, "unknown")
+| stats count by service | sort service</query>
+        <earliest>$timerange.earliest$</earliest>
+        <latest>$timerange.latest$</latest>
+      </search>
+      <fieldForLabel>service</fieldForLabel>
+      <fieldForValue>service</fieldForValue>
+      <default>*</default>
+    </input>
+    <input type="dropdown" token="priority" searchWhenChanged="true">
+      <label>Ticket priority</label>
+      <choice value="*">All priorities</choice>
+      <choice value="P1">P1</choice>
+      <choice value="P2">P2</choice>
+      <choice value="P3">P3</choice>
+      <choice value="P4">P4</choice>
+      <default>*</default>
+    </input>
+  </fieldset>
+
+  <row>
+    <!-- Panel 1: error rate by service (searches/error-rate-tracking.spl) -->
+    <panel>
+      <title>Error rate % by service (5m buckets)</title>
+      <chart>
+        <search>
+          <query>index=web sourcetype=access_combined
+| eval service=coalesce(service, "unknown")
+| eval is_error=if(status>=500, 1, 0)
+| bin _time span=5m
+| stats sum(is_error) as errors count as total_requests by _time, service
+| eval error_rate=round(errors / total_requests * 100, 2)
+| search service=$service$
+| timechart span=5m avg(error_rate) as error_pct by service
+| fillnull value=0</query>
+          <earliest>$timerange.earliest$</earliest>
+          <latest>$timerange.latest$</latest>
+        </search>
+        <option name="charting.chart">line</option>
+        <option name="charting.axisY.scale">linear</option>
+        <option name="charting.axisTitleY.text">error %</option>
+        <option name="refresh.display">progressbar</option>
+      </chart>
+    </panel>
+
+    <!-- Panel 2: MTTR by priority (searches/mttr-measurement.spl) -->
+    <panel>
+      <title>MTTR by priority (minutes)</title>
+      <table>
+        <search>
+          <query>index=tickets sourcetype=ticket_events status=resolved
+| eval duration_min=round((resolved_time - opened_time) / 60, 1)
+| where duration_min > 0
+| eval priority=upper(priority)
+| stats count as incidents avg(duration_min) as avg_mttr_min median(duration_min) as p50_mttr_min perc95(duration_min) as p95_mttr_min by priority
+| search priority=$priority$
+| eval avg_mttr_min=round(avg_mttr_min, 1)
+| sort - incidents</query>
+          <earliest>$timerange.earliest$</earliest>
+          <latest>$timerange.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <!-- Panel 3: capacity forecast (searches/capacity-forecasting.spl) -->
+    <panel>
+      <title>Disk capacity forecast (30-day, linear model)</title>
+      <chart>
+        <search>
+          <query>index=metrics sourcetype=perf
+| bin _time span=1d
+| stats max(disk_used_pct) as disk_pct by _time, host, mount
+| sort _time
+| predict disk_pct as disk_forecast future_timespan=30 holdback=0 algorithm=LL
+| eval forecast_date=strftime(_time, "%Y-%m-%d")
+| where _time >= relative_time(now(), "-14d@d")
+| timechart span=1d max(disk_pct) as actual max(disk_forecast) as forecast by mount</query>
+          <earliest>-14d@d</earliest>
+          <latest>+30d@d</latest>
+        </search>
+        <option name="charting.chart">line</option>
+        <option name="charting.axisTitleY.text">disk used %</option>
+      </chart>
+    </panel>
+
+    <!-- Panel 4: failed logins (searches/failed-logins.spl) -->
+    <panel>
+      <title>Failed-login bursts (&gt;20 per src_ip / 10m)</title>
+      <table>
+        <search>
+          <query>index=auth sourcetype=secure action="failed_login"
+| bin _time span=10m
+| stats count as failures dc(user) as distinct_users values(user) as targeted_users by _time, src_ip
+| where failures > 20
+| join type=left src_ip
+    [ search index=auth sourcetype=secure action="accepted_login"
+      | stats count as successes by src_ip ]
+| fillnull value=0 successes
+| eval verdict=case(successes > 0, "COMPROMISE SUSPECTED", distinct_users > 5, "password spray", 1=1, "brute force")
+| sort - failures
+| table _time, src_ip, failures, distinct_users, targeted_users, successes, verdict</query>
+          <earliest>$timerange.earliest$</earliest>
+          <latest>$timerange.latest$</latest>
+        </search>
+        <format type="color" field="verdict">
+          <colorPalette type="map">{"COMPROMISE SUSPECTED": #DC4E41}</colorPalette>
+        </format>
+      </table>
+    </panel>
+  </row>
+</dashboard>

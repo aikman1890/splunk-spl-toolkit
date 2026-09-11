@@ -1,0 +1,29 @@
+# mttr-measurement.spl
+# ---------------------------------------------------------------------------
+# Mean Time To Restore (MTTR) by incident priority.
+#
+# Source: index=tickets, sourcetype=ticket_events — one event per ticket
+# status transition, carrying ticket_id, priority, status, opened_time and
+# resolved_time (epoch). Events where a ticket is still open (no resolved
+# event yet) are excluded so open incidents don't skew the average.
+#
+# MTTR here is mean(open -> resolved) in minutes, grouped by priority.
+# Dashboard token: $priority$ (optional multi-select filter)
+# ---------------------------------------------------------------------------
+
+index=tickets sourcetype=ticket_events status=resolved
+| eval duration_min=round((resolved_time - opened_time) / 60, 1)
+| where duration_min > 0
+| eval priority=upper(priority)
+| stats
+      count as incidents
+      avg(duration_min) as avg_mttr_min
+      median(duration_min) as p50_mttr_min
+      perc95(duration_min) as p95_mttr_min
+    by priority
+| eval avg_mttr_min=round(avg_mttr_min, 1)
+| sort - incidents
+
+# --- Dashboard token variant (used in dashboards/sre-overview.xml) ---
+# Add after the stats command:
+# | search priority=$priority$

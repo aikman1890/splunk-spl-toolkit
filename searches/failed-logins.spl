@@ -1,0 +1,31 @@
+# failed-logins.spl
+# ---------------------------------------------------------------------------
+# Brute-force / password-spray detection.
+#
+# Source: index=auth, sourcetype=secure — Linux auth logs normalized to
+# action="failed_login" on failures, with src_ip and user extracted.
+# Flags any source IP with more than 20 failed logins in a 10-minute window,
+# then summarizes what it was doing: which users it targeted and whether it
+# eventually succeeded (compromise indicator — treat as SEV-1).
+#
+# Tune FAILURE_THRESHOLD and the span to your baseline.
+# ---------------------------------------------------------------------------
+
+index=auth sourcetype=secure action="failed_login"
+| bin _time span=10m
+| stats
+      count as failures
+      dc(user) as distinct_users
+      values(user) as targeted_users
+    by _time, src_ip
+| where failures > 20
+| join type=left src_ip
+    [ search index=auth sourcetype=secure action="accepted_login"
+      | stats count as successes by src_ip ]
+| fillnull value=0 successes
+| eval verdict=case(
+      successes > 0, "COMPROMISE SUSPECTED — investigate immediately",
+      distinct_users > 5, "password spray across users",
+      1=1, "brute force against few accounts")
+| sort - failures
+| table _time, src_ip, failures, distinct_users, targeted_users, successes, verdict

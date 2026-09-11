@@ -1,0 +1,29 @@
+# capacity-forecasting.spl
+# ---------------------------------------------------------------------------
+# Forecast disk and CPU growth 30 days out with Splunk's `predict` command.
+#
+# Source: index=metrics, sourcetype=perf — periodic host samples carrying
+# host, mount, disk_used_pct, cpu_pct. The search aggregates to a daily grain
+# (predict needs regular intervals), fits a linear model on the last 14 days,
+# and projects forward 30 days. future_timespan=30 gives the forecast window.
+#
+# Tip: raise `holdback=0` coverage or widen the base search for seasonal
+# workloads; linear is a starting point, not a promise.
+# ---------------------------------------------------------------------------
+
+index=metrics sourcetype=perf
+| bin _time span=1d
+| stats
+      max(disk_used_pct) as disk_pct
+      avg(cpu_pct) as cpu_pct
+    by _time, host, mount
+| sort _time
+| predict disk_pct as disk_forecast
+      cpu_pct as cpu_forecast
+      future_timespan=30
+      holdback=0
+      algorithm=LL
+| eval forecast_date=strftime(_time, "%Y-%m-%d")
+| where _time >= relative_time(now(), "-14d@d")
+| table forecast_date, host, mount, disk_pct, disk_forecast, cpu_pct, cpu_forecast
+| sort forecast_date, host, mount

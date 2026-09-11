@@ -1,0 +1,30 @@
+# error-rate-tracking.spl
+# ---------------------------------------------------------------------------
+# Error rate (%) by service over time.
+#
+# Source: index=web, sourcetype=access_combined (Apache/Nginx combined logs).
+# A request counts as an error when status >= 500. The search normalizes each
+# service's 5xx count against its total request volume, then buckets results
+# per 5 minutes so spikes are visible on a timechart.
+#
+# Dashboard token: $service$ (optional multi-select filter, defaults to all)
+# ---------------------------------------------------------------------------
+
+index=web sourcetype=access_combined
+    [| inputlookup service_inventory.csv | fields service ]
+| eval service=coalesce(service, "unknown")
+| eval is_error=if(status>=500, 1, 0)
+| bin _time span=5m
+| stats
+      sum(is_error) as errors
+      count as total_requests
+    by _time, service
+| eval error_rate=round(errors / total_requests * 100, 2)
+| timechart span=5m avg(error_rate) as error_pct by service
+| fillnull value=0
+
+# --- Dashboard token variant (used in dashboards/sre-overview.xml) ---
+# Replace the timechart line with:
+# | search service=$service$
+# | timechart span=5m avg(error_rate) as error_pct by service
+# | fillnull value=0
